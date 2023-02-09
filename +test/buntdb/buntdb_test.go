@@ -9,7 +9,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tidwall/buntdb"
 )
@@ -319,4 +321,60 @@ func TestBuntdb_Snapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestBuntdb_Expiratin(t *testing.T) {
+	db, err := buntdb.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var exCount int32
+	var config buntdb.Config
+	if err := db.ReadConfig(&config); err == nil {
+		config.OnExpiredSync = func(key, value string, tx *buntdb.Tx) error {
+			if _, err := tx.Delete(key); err != nil {
+				// it's ok to get a "not found" because the
+				// 'Delete' method reports "not found" for
+				// expired items.
+				if err != buntdb.ErrNotFound {
+					return err
+				}
+			}
+
+			atomic.AddInt32(&exCount, 1)
+
+			return nil
+		}
+		// config.OnExpired = func(keys []string) {
+		// 	atomic.AddInt32(&exCount, Len32(keys))
+		// }
+		db.SetConfig(config)
+	}
+
+	s := strings.Repeat("A", 1<<12)
+
+	err = db.Update(func(tx *buntdb.Tx) error {
+		for i := 0; i < 10; i++ {
+			_, _, err = tx.Set(strconv.Itoa(i), string(s), &buntdb.SetOptions{Expires: true, TTL: time.Millisecond * 100})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	<-time.After(time.Second * 2)
+
+	t.Log("expiration:", exCount)
+
+}
+
+func Len32[T any](v []T) int32 {
+	return int32(len(v))
 }
